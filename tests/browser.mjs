@@ -36,7 +36,12 @@ try {
   await page.locator('#detail button').click();
   await page.locator('#modules button').nth(1).click();
   await page.locator('#detail button').click();
+  assert.equal(await page.locator('#progress').textContent(),'2 / 4');
+  await page.locator('#light').evaluate(e=>{e.value=100;e.dispatchEvent(new Event('input',{bubbles:true}))});
   await page.waitForFunction(()=>document.querySelector('#progress').textContent==='3 / 4');
+  await page.locator('#tour').click();
+  assert.equal(await page.locator('#tour').getAttribute('aria-pressed'),'true');
+  await page.locator('#tour').click();
   await page.locator('#explode').click();
   await page.waitForFunction(()=>document.querySelector('#progress').textContent==='4 / 4');
   await page.locator('#paths').click();
