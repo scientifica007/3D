@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdir, readFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -125,6 +125,18 @@ m=advance(m,500,a,{draw_calls:20,cpu_submit_ms:5}).window;
 const mr=advance(m,1000,a,{draw_calls:40,cpu_submit_ms:7}).sample;
 assert.deepEqual(mr.render_metrics,{draw_calls:30,cpu_submit_ms:6});assert.equal(mr.render_metric_frames,2);
 console.log('PASS: conservative frustum bounds, docking latch guard and render counter aggregation');
+const closedDoors=[{z:5.69,open:0}];
+for(const dt of [1/144,1/60,1/30,.12]){
+  const sim={inside:true,hatchTransit:null,freePos:[0,.12,6.32]};
+  const log={active:true,lastCollision:-Infinity},records=[];let now=0;
+  const move=productionFunction('moveFree','freeMotion',
+    ['state','walkMove','cabinDoors','cabinObstacles','session','performance','logEvent','vecLog','logZone','roundLog','logMovement'],
+    [sim,walkMove,closedDoors,[],log,{now:()=>now},(type,data)=>records.push({type,data}),v=>v.slice(),()=> 'AIRLOCK',v=>Number(v.toFixed(3)),()=>{}]);
+  for(let i=0;i<Math.ceil(2/dt);i++){now+=dt*1000;move([0,0,-.45*dt]);}
+  assert.ok(sim.freePos[2]>=5.82-1e-5&&sim.freePos[2]<=5.845+1e-5);
+  assert.ok(records.some(e=>e.type==='movement_blocked'&&e.data.zone==='AIRLOCK'&&e.data.actual<e.data.requested));
+}
+console.log('PASS: actual movement-blocked recorder at four simulation frame cadences');
 async function setup(viewport,mobile=false,fallback=false){
   const page=await browser.newPage({viewport,deviceScaleFactor:1,isMobile:mobile,hasTouch:mobile});
   page.on('pageerror',e=>errors.push(e.message));
@@ -200,9 +212,25 @@ async function checkInterior(page){
   await fullCanvas(page);
   await page.screenshot({path:'artifacts/interior-airlock.png'});
   await page.locator('#gl').focus();await page.keyboard.down('w');
-  await page.waitForFunction(()=>window.__testEye[2]<5.92,{},{timeout:15000});
-  await page.waitForTimeout(800);await page.keyboard.up('w');
-  assert.ok((await cameraEye(page))[2]>5.82,'Closed door stops actual camera');
+  // Wait for physical contact, not a fixed wall-clock delay after nearing the door.
+  // Slow software-rendered frames cap simulation dt at 0.12 s; 800 ms of wall
+  // time need not be enough to cover the remaining distance to the barrier.
+  try {
+    await page.evaluate(()=>{window.__testDoorContact=null;});
+    await page.waitForFunction(()=>{
+      const eye=window.__testEye,frame=window.__testFrame;
+      if(!eye||!Number.isFinite(frame))return false;
+      const z=eye[2],prev=window.__testDoorContact;
+      if(prev&&prev.frame===frame)return false;
+      const near=z>=5.82-1e-5&&z<=5.845+1e-5;
+      const stable=near&&prev&&Math.abs(z-prev.z)<1e-6?prev.stable+1:0;
+      window.__testDoorContact={z,frame,stable};
+      return stable>=3;
+    },null,{timeout:30000});
+  } finally {await page.keyboard.up('w');}
+  const contact=await cameraEye(page);
+  assert.ok(contact[2]>=5.82-1e-5&&contact[2]<=5.845+1e-5,'Closed door stops actual camera at the collision boundary');
+  console.log('Closed-door contact:',contact);
   assert.match(await page.locator('#interiorPrompt').textContent(),/فتح/);
   await page.locator('#interiorAction').click();await nextFrame(page);
   // Approach the outer hatch while the inner door is open, then verify the interlock.
@@ -254,6 +282,7 @@ async function checkSession(page){
   await tab(page,'session');
   await page.locator('#sessionNotes').fill('اختبار سجل التجربة');
   const first=await downloadSession(page);
+  await writeFile('artifacts/test-session-before-reset.json',JSON.stringify(first,null,2));
   assert.equal(first.notes,'اختبار سجل التجربة');
   assert.ok(first.samples.length>0);
   assert.ok(first.events.some(e=>e.type==='session_started'));
@@ -263,7 +292,9 @@ async function checkSession(page){
   assert.ok(first.events.some(e=>e.type==='door_interaction'&&e.data.result==='rejected'&&e.data.reason==='inner_door_open'));
   assert.ok(first.events.some(e=>e.type==='door_state'&&e.data.result==='completed'));
   assert.ok(first.performance_samples.some(p=>p.start_context.mode==='interior'||p.end_context.mode==='interior'));
-  assert.ok(first.events.some(e=>e.type==='movement_blocked'));
+  const blocked=first.events.filter(e=>e.type==='movement_blocked');
+  console.log('Recorded blocked movements:',blocked);
+  assert.ok(blocked.some(e=>e.data.zone==='AIRLOCK'&&e.data.requested>0&&e.data.actual<e.data.requested),'Export includes actual blocked motion at the airlock');
   console.log('Session movement:',first.session.summary.distance_units);
   assert.ok(first.session.summary.distance_units.inside>=.89,'Interior walk from airlock to habitat records actual displacement');
   assert.ok(first.session.summary.distance_units.free>0,'Free flight records actual displacement');
