@@ -1,7 +1,7 @@
 # HELIOS 2.0 — هيليوس
 ## Orbital Engineering Lab 02 | مختبر الهندسة المدارية
 
-محاكاة فضائية تفاعلية ثلاثية الأبعاد في نسختين تشتركان في المحرك الرسومي والفيزياء المبسطة.
+محاكاة فضائية تفاعلية ثلاثية الأبعاد في نسختين مستقلتين في دورة الإصدار. نسخة Android 2.0 مجمدة على نسخة الويب المثبتة، ويستمر تطوير الويب دون إعادة بناء Android تلقائيًا.
 
 | المنصة | الرابط |
 |---|---|
@@ -25,7 +25,7 @@
 يمكن فتح index.html محليًا بلا خادم ولا شبكة. يتضمن المستودع .nojekyll للنشر المباشر من الفرع main/root. إذا استمر فشل Pages، غيّر Settings → Pages → Source إلى **GitHub Actions** ثم شغّل **Deploy HELIOS website** من Actions. لا تستخدم مصدرين متزامنين. نشر الموقع غير مشروط بنتيجة اختبار المتصفح.
 
 ### Android
-مشروع Gradle داخل android/، تطبيق Android مستقل بحزمة io.github.scientifica007.helios، API 23+، WebView مسرّع عتاديًا، ومحتوى المحاكاة مضمّن في APK. لا يحتاج إذن الإنترنت ولا يعتمد على رابط الموقع. يتطلب دعم WebGL وتحديث Android System WebView بما يتوافق مع الجهاز.
+نسخة HTML المضمّنة في Android محفوظة مستقلّة في android/app/src/main/assets/index.html. تعديل index.html الرئيسي لا يطلق بناء APK ولا يغير محتوى نسخة Android. مشروع Gradle داخل android/، تطبيق Android مستقل بحزمة io.github.scientifica007.helios، API 23+، WebView مسرّع عتاديًا، ومحتوى المحاكاة مضمّن في APK. لا يحتاج إذن الإنترنت ولا يعتمد على رابط الموقع. يتطلب دعم WebGL وتحديث Android System WebView بما يتوافق مع الجهاز.
 
 بناء محلي عند توفر JDK 17 وGradle 8.9 وAndroid SDK 35:
 
@@ -58,7 +58,7 @@ battery change = net × elapsed simulation seconds / 120
 ## الملفات
 
 - index.html: التطبيق المشترك، المحرك الرسومي، ونموذج المحاكاة.
-- android/: مشروع Android.
+- android/: مشروع Android ونسخة HELIOS 2.0 المجمدة.
 - tests/browser.mjs: اختبار Chromium.
 - .github/workflows/browser.yml: اختبار الويب.
 - .github/workflows/android.yml: بناء APK ونشره.
