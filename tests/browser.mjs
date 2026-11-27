@@ -100,17 +100,43 @@ interactionState.powerMode='normal';interact();
 assert.equal(interactionState.labScan,1);assert.equal(interactionState.insideDone.lab,true);
 assert.equal(interactionEvents[1].data.result,'accepted');
 console.log('PASS: contextual performance windows, door decision rules, docking guidance and emergency policy');
-async function setup(viewport,mobile=false){
+const planesOf=productionFunction('frustumPlanes','sphereVisible');
+const visible=productionFunction('sphereVisible','bindMesh');
+const identity=[1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1],planes=planesOf(identity);
+assert.equal(planes.length,6);
+for(let axis=0;axis<3;axis++)for(const sign of [-1,1]){
+  const p=[0,0,0];p[axis]=sign*1.2;
+  assert.equal(visible(planes,p,.1),false);
+  assert.equal(visible(planes,p,.25),true);
+  p[axis]=sign*1.1;assert.equal(visible(planes,p,.1),true);
+}
+assert.equal(visible(null,[100,100,100],0),true);
+const perspective=productionFunction('perspective','view');
+const persp=planesOf(perspective(Math.PI/3,1.5,.1,100));
+assert.equal(visible(persp,[0,0,-10],1),true);
+assert.equal(visible(persp,[0,0,10],1),false);
+assert.equal(visible(persp,[0,0,-101],.1),false);
+assert.equal(visible(persp,[0,0,-.05],.1),true);
+for(let z=1;z<90;z+=3){const y=z*Math.tan(Math.PI/6),x=y*1.5;assert.equal(visible(persp,[x*.99,y*.99,-z],0),true);assert.equal(visible(persp,[x*1.1,0,-z],0),false);}
+const mayThrust=productionFunction('mayThrust','syncDockControls');
+assert.equal(mayThrust(true,true),false);assert.equal(mayThrust(false,false),false);assert.equal(mayThrust(true,false),true);
+let m=advance(null,0,a).window;
+m=advance(m,500,a,{draw_calls:20,cpu_submit_ms:5}).window;
+const mr=advance(m,1000,a,{draw_calls:40,cpu_submit_ms:7}).sample;
+assert.deepEqual(mr.render_metrics,{draw_calls:30,cpu_submit_ms:6});assert.equal(mr.render_metric_frames,2);
+console.log('PASS: conservative frustum bounds, docking latch guard and render counter aggregation');
+async function setup(viewport,mobile=false,fallback=false){
   const page=await browser.newPage({viewport,deviceScaleFactor:1,isMobile:mobile,hasTouch:mobile});
   page.on('pageerror',e=>errors.push(e.message));
   page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});
-  await page.addInitScript(()=>{
+  await page.addInitScript(fallback=>{
     const proto=WebGLRenderingContext.prototype, names=new WeakMap();
+    if(fallback){const original=proto.getExtension;proto.getExtension=function(name){return name==='ANGLE_instanced_arrays'?null:original.call(this,name);};}
     const get=proto.getUniformLocation,set=proto.uniformMatrix4fv,set3=proto.uniform3fv;
     proto.getUniformLocation=function(program,name){const result=get.call(this,program,name);if(result)names.set(result,name);return result;};
     proto.uniformMatrix4fv=function(location,transpose,value){if(names.get(location)==='uVP')window.__testVP=Array.from(value);return set.call(this,location,transpose,value);};
     proto.uniform3fv=function(location,value){if(names.get(location)==='uEye'){window.__testEye=Array.from(value);window.__testFrame=(window.__testFrame||0)+1;}return set3.call(this,location,value);};
-  });
+  },fallback);
   await page.goto(url);
   await page.waitForFunction(()=>document.querySelector('#renderStatus').textContent.includes('جاهز'),{},{timeout:30000});
   await page.waitForFunction(()=>document.querySelector('#earthStatus').textContent.includes('3/3'),{},{timeout:30000});
@@ -210,7 +236,8 @@ async function downloadSession(page){
   assert.match(download.suggestedFilename(),/^helios-.*\.json$/);
   const data=JSON.parse(await readFile(await download.path(),'utf8'));
   assert.equal(data.schema,'helios.session.v1');
-  assert.equal(data.app.version,'3.2.0');
+  assert.equal(data.app.version,'3.3.0');
+  assert.ok(data.performance_samples.every(p=>p.render_metric_frames===p.frames&&p.render_metrics&&p.render_metrics.draw_calls>0&&p.render_metrics.culled<=p.render_metrics.objects&&p.render_metrics.cpu_submit_ms>=0));
   assert.ok(Number.isFinite(data.session.summary.distance_units.inside));
   assert.ok(Number.isFinite(data.session.summary.distance_units.free));
   assert.deepEqual(Object.keys(data.session.summary.distance_units).sort(),['free','inside']);
@@ -271,6 +298,40 @@ function checkPan(before,after,dx,dy,viewport){
   assert.ok(Math.abs(b[0]-a[0]-dx)<3,'Horizontal screen displacement matches gesture');
   assert.ok(Math.abs(b[1]-a[1]-dy)<3,'Vertical screen displacement matches gesture');
 }
+async function capturePixels(page){
+  return page.evaluate(()=>new Promise(resolve=>requestAnimationFrame(()=>{
+    const c=document.querySelector('#gl'),g=c.getContext('webgl'),b=new Uint8Array(c.width*c.height*4);
+    g.readPixels(0,0,c.width,c.height,g.RGBA,g.UNSIGNED_BYTE,b);
+    let lit=0;for(let i=0;i<b.length;i+=4)if(b[i]+b[i+1]+b[i+2]>65)lit++;
+    resolve({lit,total:c.width*c.height,error:g.getError(),width:c.width,height:c.height});
+  })));
+}
+async function compareRenderPaths(page,fallback=false){
+  await action(page,'play');await close(page);
+  await tab(page,'settings');await page.locator('#quality').selectOption('cinema');
+  for(const mode of ['reference','optimized','balanced']){
+    await tab(page,'settings');await page.locator('#renderMode').selectOption(mode);
+    await close(page);await page.waitForTimeout(2600);
+    const px=await capturePixels(page);assert.equal(px.error,0);assert.ok(px.lit>px.total*.015);
+    await page.screenshot({path:'artifacts/render-'+(fallback?'fallback-':'')+mode+'.png'});
+  }
+  await tab(page,'session');const data=await downloadSession(page);
+  const sample=mode=>data.performance_samples.filter(p=>!p.mixed_context&&!p.start_context.menu_open&&p.start_context.quality==='cinema'&&p.start_context.render_mode===mode).at(-1);
+  const ref=sample('reference'),opt=sample('optimized'),bal=sample('balanced');
+  assert.ok(ref&&opt&&bal,'Stable windows for all three render modes');
+  assert.equal(ref.start_context.render_width,opt.start_context.render_width);
+  assert.equal(ref.start_context.render_height,opt.start_context.render_height);
+  assert.equal(ref.render_metrics.culled,0);assert.equal(ref.render_metrics.instances,0);assert.equal(ref.render_metrics.lod_objects,0);
+  assert.equal(opt.render_metrics.lod_objects,0);assert.ok(opt.render_metrics.culled>0);
+  assert.ok(opt.render_metrics.draw_calls<ref.render_metrics.draw_calls);
+  if(fallback)assert.equal(opt.render_metrics.instances,0);
+  else if(opt.start_context.instancing_available)assert.ok(opt.render_metrics.instances>0);
+  assert.ok(bal.render_metrics.lod_objects>0);
+  assert.ok(bal.render_metrics.mesh_triangles<=opt.render_metrics.mesh_triangles);
+  console.log('RENDER A/B',fallback,{reference:ref.render_metrics,optimized:opt.render_metrics,balanced:bal.render_metrics});
+  await tab(page,'settings');await page.locator('#renderMode').selectOption('optimized');await page.locator('#quality').selectOption('auto');await close(page);
+  await action(page,'play');await close(page);
+}
 async function fullCanvas(page){
   const b=await page.evaluate(()=>{
     const r=document.querySelector('#gl').getBoundingClientRect();
@@ -306,6 +367,7 @@ try{
   });
   console.log('Framebuffer:',pixels);assert.equal(pixels.error,0);assert.ok(pixels.lit>pixels.total*.015);assert.ok(pixels.bright>100);
   await page.screenshot({path:'artifacts/desktop.png'});
+  await compareRenderPaths(page);
   const beforePan=await matrix(page);
   await page.locator('#panMode').click();
   assert.equal(await page.locator('#panMode').getAttribute('aria-pressed'),'true');
@@ -356,6 +418,24 @@ try{
   await page.locator('#flightCollapse').click();assert.equal(await page.locator('#flightPanel').isVisible(),false);await page.locator('#pilotQuick').click();assert.equal(await page.locator('#flightPanel').isVisible(),true);
   await page.locator('#autodock').click();await page.waitForFunction(()=>document.querySelector('#flightMessage').textContent.includes('التحام ناجح'),{},{timeout:60000});
   await page.screenshot({path:'artifacts/docking.png'});
+  assert.equal(await page.locator('#undock').isVisible(),true);
+  assert.ok(await page.locator('[data-axis]').first().isDisabled());
+  assert.ok(await page.locator('#autodock').isDisabled());
+  // Even synthetic held input cannot release a docked craft.
+  await page.locator('[data-axis]').first().dispatchEvent('keydown',{key:' ',repeat:false});
+  await page.waitForTimeout(400);
+  assert.match(await page.locator('#flightMessage').textContent(),/التحام ناجح/);
+  await tab(page,'session');const firstDock=await downloadSession(page);
+  assert.equal(firstDock.events.filter(e=>e.type==='shuttle_docked').length,1);
+  await close(page);await page.locator('#undock').click();
+  assert.equal(await page.locator('[data-axis]').first().isDisabled(),false);
+  await page.locator('#autodock').click();
+  await page.waitForFunction(()=>document.querySelector('#flightMessage').textContent.includes('التحام ناجح'),{},{timeout:60000});
+  await tab(page,'session');const secondDock=await downloadSession(page);
+  const docks=secondDock.events.filter(e=>e.type==='shuttle_docked');
+  assert.equal(docks.length,2);assert.notEqual(docks[0].data.attempt,docks[1].data.attempt);
+  assert.ok(secondDock.events.some(e=>e.type==='shuttle_undocked'));
+  await close(page);
   for(const view of ['top','planet','sun']){
     await tab(page,'settings');await page.locator('#camera').selectOption(view);await page.waitForTimeout(1000);
     assert.equal(await page.locator('#pilot').getAttribute('aria-pressed'),'false');
@@ -423,6 +503,8 @@ try{
     await tab(mobile,'mission');assert.equal(await mobile.locator('#restart').isVisible(),true);
     await close(mobile);await mobile.close();
   }
+  const fallback=await setup({width:760,height:440},false,true);
+  await compareRenderPaths(fallback,true);await fallback.close();
   assert.deepEqual(errors,[]);
   console.log('PASS: real WebGL, Earth maps, simulation, docking, full viewport, contextual menus, portrait and landscape clean modes');
 }finally{await browser.close();}
