@@ -81,6 +81,49 @@ try {
   await mobile.waitForFunction(()=>document.querySelector('#renderStatus').textContent.includes('جاهز'));
   assert.ok(await mobile.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1),'No horizontal overflow');
   await mobile.screenshot({path:'artifacts/mobile.png',fullPage:true});
+  await mobile.locator('#pilot').click();
+  const checkCockpit = async (p) => {
+    const bounds = await p.evaluate(()=>{
+      const scene=document.querySelector('#stage').getBoundingClientRect(), toolbar=document.querySelector('.dock').getBoundingClientRect(), flight=document.querySelector('#flightPanel').getBoundingClientRect();
+      return {sceneBottom:scene.bottom,toolbarTop:toolbar.top,toolbarBottom:toolbar.bottom,flightTop:flight.top,overflow:document.documentElement.scrollWidth-innerWidth,touch:getComputedStyle(document.querySelector('#gl')).touchAction};
+    });
+    assert.ok(bounds.sceneBottom<=bounds.toolbarTop+1,'Toolbar does not obscure canvas');
+    assert.ok(bounds.toolbarBottom<=bounds.flightTop+1,'Flight controls do not obscure canvas or toolbar');
+    assert.ok(bounds.overflow<=1,'No horizontal overflow');
+    assert.equal(bounds.touch,'pan-y','Default allows native vertical scrolling');
+  };
+  await checkCockpit(mobile);
+  await mobile.locator('#flightCollapse').click();
+  assert.equal(await mobile.locator('#flightBody').isVisible(),false);
+  await mobile.locator('#flightCollapse').click();
+  assert.equal(await mobile.locator('#flightBody').isVisible(),true);
+  await mobile.locator('#touchMode').click();
+  assert.equal(await mobile.locator('#gl').evaluate(e=>getComputedStyle(e).touchAction),'none');
+  await mobile.locator('#touchMode').click();
+  await mobile.screenshot({path:'artifacts/mobile-pilot.png',fullPage:true});
+  const landscape=await browser.newPage({viewport:{width:760,height:360},deviceScaleFactor:1,isMobile:true,hasTouch:true});
+  landscape.on('pageerror',e=>errors.push(e.message));
+  await landscape.goto(url);
+  await landscape.waitForFunction(()=>document.querySelector('#renderStatus').textContent.includes('جاهز'));
+  await landscape.locator('#pilot').click();
+  await checkCockpit(landscape);
+  await landscape.evaluate(()=>window.scrollTo(0,0));
+  const cdp=await landscape.context().newCDPSession(landscape);
+  const b=await landscape.locator('#gl').boundingBox();
+  const x=Math.round(b.x+20),y=Math.round(Math.min(b.y+b.height-12,340));
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x,y}]});
+  for(let i=1;i<=8;i++){
+    await cdp.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x,y:y-i*15}]});
+    await landscape.waitForTimeout(30);
+  }
+  await cdp.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+  await landscape.waitForFunction(()=>scrollY>20,{},{timeout:5000});
+  await landscape.locator('#controlJump').click();
+  await landscape.waitForFunction(()=>document.querySelector('#controlCenter').getBoundingClientRect().top<100);
+  await landscape.screenshot({path:'artifacts/landscape-controls.png'});
+  await landscape.evaluate(()=>window.scrollTo(0,0));
+  await landscape.screenshot({path:'artifacts/landscape-pilot.png',fullPage:true});
+  await landscape.close();
   assert.deepEqual(errors,[]);
   console.log('PASS: actual WebGL framebuffer, interaction, mission, energy, pause, reset, responsive mobile');
 } finally { await browser.close() }
