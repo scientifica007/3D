@@ -35,7 +35,7 @@ async function setup(viewport,mobile=false){
     const get=proto.getUniformLocation,set=proto.uniformMatrix4fv,set3=proto.uniform3fv;
     proto.getUniformLocation=function(program,name){const result=get.call(this,program,name);if(result)names.set(result,name);return result;};
     proto.uniformMatrix4fv=function(location,transpose,value){if(names.get(location)==='uVP')window.__testVP=Array.from(value);return set.call(this,location,transpose,value);};
-    proto.uniform3fv=function(location,value){if(names.get(location)==='uEye')window.__testEye=Array.from(value);return set3.call(this,location,value);};
+    proto.uniform3fv=function(location,value){if(names.get(location)==='uEye'){window.__testEye=Array.from(value);window.__testFrame=(window.__testFrame||0)+1;}return set3.call(this,location,value);};
   });
   await page.goto(url);
   await page.waitForFunction(()=>document.querySelector('#renderStatus').textContent.includes('جاهز'),{},{timeout:30000});
@@ -45,13 +45,28 @@ async function setup(viewport,mobile=false){
 async function matrix(page){await page.waitForFunction(()=>Array.isArray(window.__testVP));return page.evaluate(()=>window.__testVP.slice());}
 async function cameraEye(page){await page.waitForFunction(()=>Array.isArray(window.__testEye));return page.evaluate(()=>window.__testEye.slice());}
 const distance=(a,b)=>Math.hypot(...a.map((v,i)=>v-b[i]));
+async function nextFrame(page){
+  const previous=await page.evaluate(()=>window.__testFrame||0);
+  await page.waitForFunction(n=>window.__testFrame>n,previous,{timeout:30000});
+}
+async function waitMatrix(page,expected){
+  await page.waitForFunction(expected=>Array.isArray(window.__testVP)&&window.__testVP.every((v,i)=>Math.abs(v-expected[i])<1e-4),expected,{timeout:30000});
+}
+async function cameraSnapshot(page){
+  await nextFrame(page);
+  return page.evaluate(()=>({eye:window.__testEye.slice(),matrix:window.__testVP.slice()}));
+}
 async function checkFree(page,mobile=false){
-  const origin=await cameraEye(page),orbit=await matrix(page);
-  await action(page,'freeCamera');
-  await page.waitForTimeout(200);
+  // Read the actual camera immediately before the transition, after opening the menu.
+  await tab(page,'scene');
+  const snapshot=await cameraSnapshot(page),origin=snapshot.eye,orbit=snapshot.matrix;
+  await page.locator('#freeCamera').click();
+  await nextFrame(page);
   assert.equal(await page.locator('#freeControls').isVisible(),true);
   assert.equal(await page.locator('#panMode').isVisible(),false);
-  assert.ok(distance(origin,await cameraEye(page))<.001,'Entering free flight preserves camera position');
+  const entered=await cameraEye(page),entryError=distance(origin,entered);
+  console.log('Free flight entry:',page.viewportSize(),{origin,entered,entryError});
+  assert.ok(entryError<.001,'Entering free flight preserves camera position');
   await fullCanvas(page);
   if(mobile){
     const touch=await page.context().newCDPSession(page),b=await page.locator('[data-fly="forward"]').boundingBox(),x=Math.round(b.x+b.width/2),y=Math.round(b.y+b.height/2);
@@ -61,19 +76,19 @@ async function checkFree(page,mobile=false){
   }else{
     await page.locator('#gl').focus();await page.keyboard.down('w');await page.waitForTimeout(700);await page.keyboard.up('w');
   }
-  await page.waitForTimeout(150);
+  await nextFrame(page);
   const moved=await cameraEye(page);assert.ok(distance(origin,moved)>.15,'Held movement changes camera position');
-  await page.waitForTimeout(250);assert.ok(distance(moved,await cameraEye(page))<.001,'Camera stops when control is released');
+  await nextFrame(page);assert.ok(distance(moved,await cameraEye(page))<.001,'Camera stops when control is released');
   const orientation=await matrix(page),view=page.viewportSize();
   await page.mouse.move(Math.round(view.width*.35),Math.round(view.height*.40));await page.mouse.down();await page.mouse.move(Math.round(view.width*.35)+40,Math.round(view.height*.40)+20,{steps:5});await page.mouse.up();
-  await page.waitForTimeout(150);
+  await nextFrame(page);
   const rotated=await matrix(page);assert.ok(distance(orientation.slice(0,12),rotated.slice(0,12))>.01,'Look direction changes');
   assert.ok(distance(moved,await cameraEye(page))<.001,'Looking around does not orbit or translate the camera');
   await page.locator('#freeFaster').click();assert.match(await page.locator('#freeSpeed').textContent(),/12 U\/s/);
   await page.locator('#freeHide').click();assert.equal(await page.locator('#freeControls').isVisible(),false);
   await page.locator('#freeQuick').click();assert.equal(await page.locator('#freeControls').isVisible(),true);
   await page.screenshot({path:'artifacts/free-flight-'+view.width+'.png'});
-  await action(page,'freeCamera');await page.waitForTimeout(250);
+  await action(page,'freeCamera');await nextFrame(page);
   assert.equal(await page.locator('#freeControls').isVisible(),false);
   assert.ok(distance(origin,await cameraEye(page))<.001,'Exiting free flight restores orbital position');
   assert.ok(distance(orbit,await matrix(page))<.001,'Exiting free flight restores orbital projection');
@@ -89,7 +104,7 @@ async function checkInterior(page){
   await page.waitForTimeout(800);await page.keyboard.up('w');
   assert.ok((await cameraEye(page))[2]>5.82,'Closed door stops actual camera');
   assert.match(await page.locator('#interiorPrompt').textContent(),/فتح/);
-  await page.locator('#interiorAction').click();await page.waitForTimeout(800);
+  await page.locator('#interiorAction').click();await nextFrame(page);
   await page.locator('#gl').focus();await page.keyboard.down('w');
   await page.waitForFunction(()=>window.__testEye[2]<5.43,{},{timeout:15000});await page.keyboard.up('w');
   await page.waitForFunction(()=>document.querySelector('#interiorZone').textContent.includes('HAB'));
@@ -99,7 +114,7 @@ async function checkInterior(page){
   await page.locator('#interiorAction').click();
   await page.waitForFunction(()=>document.querySelector('#interiorHud').classList.contains('hidden'),{},{timeout:10000});
   await page.waitForFunction(()=>window.__testEye[2]>7.3);
-  assert.equal(await page.locator('#hatchEntry').isVisible(),true);
+  await page.locator('#hatchEntry').waitFor({state:'visible'});
   await page.locator('#hatchEntry').click();
   await page.waitForFunction(()=>!document.querySelector('#interiorHud').classList.contains('hidden'));
   await action(page,'freeCamera');
@@ -153,7 +168,7 @@ try{
   await page.mouse.move(500,350);await page.mouse.down();await page.mouse.move(590,410,{steps:6});await page.mouse.up();
   await page.waitForTimeout(300);checkPan(beforePan,await matrix(page),90,60,{width:1366,height:850});
   await page.screenshot({path:'artifacts/pan-desktop.png'});
-  await action(page,'recenter');await page.waitForTimeout(300);
+  await action(page,'recenter');await waitMatrix(page,beforePan);
   const centered=await matrix(page);assert.ok(beforePan.every((v,i)=>Math.abs(v-centered[i])<1e-4),'Recenter restores the original view');
   await page.locator('#panMode').click();assert.equal(await page.locator('#panMode').getAttribute('aria-pressed'),'false');
   await checkFree(page);
@@ -201,8 +216,8 @@ try{
     await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
     await mobile.waitForTimeout(300);checkPan(before,await matrix(mobile),35,25,viewport);
     await mobile.screenshot({path:'artifacts/'+name+'-pan.png'});
-    await action(mobile,'recenter');await mobile.locator('#panMode').click();
-    await mobile.waitForTimeout(250);
+    await action(mobile,'recenter');await waitMatrix(mobile,before);await mobile.locator('#panMode').click();
+    await nextFrame(mobile);
     const beforePair=await matrix(mobile);
     const tx=Math.round(viewport.width*.30),ty=Math.round(viewport.height*.42);
     await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:tx,y:ty,id:1},{x:tx+70,y:ty,id:2}]});
@@ -210,6 +225,7 @@ try{
     await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
     await mobile.waitForTimeout(300);checkPan(beforePair,await matrix(mobile),30,-20,viewport);
     await action(mobile,'recenter');
+    await waitMatrix(mobile,beforePair);
     await checkFree(mobile,true);
     await action(mobile,'interiorStart');await fullCanvas(mobile);
     assert.equal(await mobile.locator('#interiorHud').isVisible(),true);
