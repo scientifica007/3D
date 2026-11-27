@@ -14,6 +14,7 @@ try {
   page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});
   await page.goto(url);
   await page.waitForFunction(()=>document.querySelector('#renderStatus').textContent.includes('جاهز'),{},{timeout:30000});
+  await page.waitForFunction(()=>document.querySelector('#earthStatus').textContent.includes('3/3'),{},{timeout:30000});
   await page.waitForTimeout(500);
   assert.equal(await page.locator('#modules button').count(),6);
   assert.equal(await page.locator('#progress').textContent(),'0 / 4');
@@ -67,6 +68,12 @@ try {
   await page.screenshot({path:'artifacts/docking.png'});
   await page.locator('#camera').selectOption('top');
   assert.equal(await page.locator('#pilot').getAttribute('aria-pressed'),'false');
+  await page.locator('#camera').selectOption('planet');
+  await page.waitForTimeout(1000);
+  await page.screenshot({path:'artifacts/earth.png'});
+  await page.locator('#camera').selectOption('sun');
+  await page.waitForTimeout(1000);
+  await page.screenshot({path:'artifacts/sun.png'});
   await page.close();
   const mobile=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1,isMobile:true,hasTouch:true});
   mobile.on('pageerror',e=>errors.push(e.message));
