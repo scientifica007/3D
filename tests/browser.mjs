@@ -56,6 +56,17 @@ try {
   assert.equal(await page.locator('#battery').textContent(),battery);
   await page.locator('#restart').click();
   assert.equal(await page.locator('#progress').textContent(),'0 / 4');
+  await page.locator('#quality').selectOption('cinema');
+  await page.waitForTimeout(300);
+  await page.screenshot({path:'artifacts/cinema.png'});
+  await page.locator('#quality').selectOption('low');
+  await page.locator('#pilot').click();
+  assert.equal(await page.locator('#pilot').getAttribute('aria-pressed'),'true');
+  await page.locator('#autodock').click();
+  await page.waitForFunction(()=>document.querySelector('#flightMessage').textContent.includes('التحام ناجح'),{},{timeout:60000});
+  await page.screenshot({path:'artifacts/docking.png'});
+  await page.locator('#camera').selectOption('top');
+  assert.equal(await page.locator('#pilot').getAttribute('aria-pressed'),'false');
   await page.close();
   const mobile=await browser.newPage({viewport:{width:390,height:844},deviceScaleFactor:1,isMobile:true,hasTouch:true});
   mobile.on('pageerror',e=>errors.push(e.message));
