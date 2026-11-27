@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - index.html
+      - assets/**
       - .github/workflows/pages.yml
 permissions:
   contents: read
@@ -26,6 +27,7 @@ jobs:
         run: |
           mkdir -p site
           cp index.html site/
+          cp -r assets site/
           touch site/.nojekyll
       - uses: actions/upload-pages-artifact@v3
         with:
