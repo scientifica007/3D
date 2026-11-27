@@ -3,7 +3,6 @@ on:
   push:
     branches: [main]
     paths:
-      - index.html
       - android/**
       - .github/workflows/android.yml
   workflow_dispatch:
@@ -25,16 +24,24 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
+      - name: Inspect Android build environment
+        run: |
+          java -version
+          gradle --version
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          command -v sdkmanager
       - name: Install SDK
-        run: sdkmanager "platforms;android-35" "build-tools;35.0.0"
+        run: |
+          yes | sdkmanager --licenses >/dev/null || test "${PIPESTATUS[1]}" = 0
+          sdkmanager "platforms;android-35" "build-tools;35.0.0"
       - name: Build offline APK
-        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace
+        run: gradle -p android :app:assembleDebug --no-daemon --stacktrace --console=plain
       - name: Verify APK signature and embedded web application
         run: |
           mkdir -p dist
           cp android/app/build/outputs/apk/debug/app-debug.apk dist/HELIOS-android.apk
           "$ANDROID_HOME/build-tools/35.0.0/apksigner" verify --verbose dist/HELIOS-android.apk
-          unzip -p dist/HELIOS-android.apk assets/index.html | cmp - index.html
+          unzip -p dist/HELIOS-android.apk assets/index.html | cmp - android/app/src/main/assets/index.html
           sha256sum dist/HELIOS-android.apk > dist/HELIOS-android.apk.sha256
       - uses: actions/upload-artifact@v4
         with:
