@@ -120,6 +120,53 @@ async function checkInterior(page){
   await action(page,'freeCamera');
   assert.equal(await page.locator('#interiorHud').isVisible(),false);
 }
+async function downloadSession(page){
+  const downloading=page.waitForEvent('download');
+  await page.locator('#sessionExport').click();
+  const download=await downloading;
+  assert.match(download.suggestedFilename(),/^helios-.*\.json$/);
+  const data=JSON.parse(await readFile(await download.path(),'utf8'));
+  assert.equal(data.schema,'helios.session.v1');
+  assert.equal(data.app.version,'3.1.0');
+  assert.equal(data.session.summary.retained_events,data.events.length);
+  assert.equal(data.session.summary.retained_samples,data.samples.length);
+  assert.ok(data.events.every((e,i)=>i===0||e.seq>data.events[i-1].seq));
+  assert.ok(data.samples.every(s=>s.camera.position.every(Number.isFinite)));
+  return data;
+}
+async function checkSession(page){
+  await tab(page,'session');
+  await page.locator('#sessionNotes').fill('اختبار سجل التجربة');
+  const first=await downloadSession(page);
+  assert.equal(first.notes,'اختبار سجل التجربة');
+  assert.ok(first.samples.length>0);
+  assert.ok(first.events.some(e=>e.type==='session_started'));
+  assert.ok(first.events.some(e=>e.type==='interior_enter'));
+  assert.ok(first.events.some(e=>e.type==='interior_exit'));
+  assert.ok(first.events.some(e=>e.type==='door_interaction'));
+  assert.ok(first.events.some(e=>e.type==='movement_blocked'));
+  assert.ok(first.session.summary.distance_units.inside>0);
+  assert.ok(first.session.summary.performance.fps_samples>0);
+  await page.locator('#sessionToggle').click();
+  const paused=await downloadSession(page);
+  assert.equal(paused.session.recording_active,false);
+  await close(page);await action(page,'recenter');await tab(page,'session');
+  const later=await downloadSession(page);
+  assert.deepEqual(later.events,paused.events);
+  assert.deepEqual(later.samples,paused.samples);
+  await page.locator('#sessionToggle').click();
+  await page.waitForFunction(()=>document.querySelector('#sessionToggle').getAttribute('aria-pressed')==='true');
+  const resumed=await downloadSession(page);
+  assert.ok(resumed.events.some(e=>e.type==='recording_resumed'));
+  page.once('dialog',d=>d.accept());
+  await page.locator('#sessionNew').click();
+  const fresh=await downloadSession(page);
+  assert.notEqual(fresh.session.id,first.session.id);
+  assert.equal(fresh.notes,'');
+  assert.equal(fresh.events[0].type,'session_started');
+  assert.equal(fresh.session.summary.event_counts.interior_enter,undefined);
+  await close(page);
+}
 function checkPan(before,after,dx,dy,viewport){
   assert.ok(before.slice(0,12).every((v,i)=>Math.abs(v-after[i])<1e-5),'Pan preserves rotation and projection');
   const project=m=>[viewport.width*(.5+.5*m[12]/m[15]),viewport.height*(.5-.5*m[13]/m[15])];
@@ -173,6 +220,7 @@ try{
   await page.locator('#panMode').click();assert.equal(await page.locator('#panMode').getAttribute('aria-pressed'),'false');
   await checkFree(page);
   await checkInterior(page);
+  await checkSession(page);
   await tab(page,'units');
   assert.equal(await page.locator('#modules button').count(),6);
   assert.equal(await page.locator('#progress').textContent(),'0 / 4');
@@ -227,6 +275,7 @@ try{
     await action(mobile,'recenter');
     await waitMatrix(mobile,beforePair);
     await checkFree(mobile,true);
+    await tab(mobile,'session');assert.equal(await mobile.locator('#sessionExport').isVisible(),true);await close(mobile);
     await action(mobile,'interiorStart');await fullCanvas(mobile);
     assert.equal(await mobile.locator('#interiorHud').isVisible(),true);
     await mobile.screenshot({path:'artifacts/'+name+'-interior.png'});
