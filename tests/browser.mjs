@@ -1,6 +1,6 @@
 import { chromium } from 'playwright';
 import assert from 'node:assert/strict';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -8,6 +8,24 @@ await mkdir('artifacts', { recursive: true });
 const browser=await chromium.launch({headless:true,args:['--use-angle=swiftshader','--enable-unsafe-swiftshader','--enable-webgl']});
 const url=pathToFileURL(resolve('index.html')).href;
 const errors=[];
+// Exercise the actual collision functions without GPU timing.
+const source=await readFile('index.html','utf8');
+const mathSource=source.slice(source.indexOf('function ringSupport('),source.indexOf('function zoneAt('));
+const dot=(a,b)=>a.reduce((sum,v,i)=>sum+v*b[i],0),sub=(a,b)=>a.map((v,i)=>v-b[i]);
+const {walkAllowed,walkMove}=new Function('TAU','INNER','OUTER','WALL','WALK_R','EYE_Y','dot','sub',mathSource+'return {walkAllowed,walkMove};')(2*Math.PI,4.70,5.70,.075,.095,.12,dot,sub);
+const doors=[{z:5.69,open:0},{z:-5.69,open:0},{z:6.70,exit:true,open:0}];
+const obstacles=[{p:[.49,-.22,-7.25],s:[.29,.38,.75],axes:null}];
+let point=walkMove([0,.12,6.32],[0,0,-2],doors,obstacles);
+assert.ok(point[2]>5.82,'Closed airlock blocks movement even across a large time step');
+doors[0].open=1;point=walkMove(point,[0,0,-.6],doors,obstacles);
+assert.ok(point[2]<5.4,'Open door allows entering habitat');
+for(let i=0;i<240;i++){const t=i*2*Math.PI/240;assert.ok(walkAllowed([5.2*Math.cos(t),.12,5.2*Math.sin(t)],doors,obstacles),'Habitat centerline is continuous');}
+assert.equal(walkAllowed([0,.12,0],doors,obstacles),false);
+assert.equal(walkAllowed([0,.12,7],doors,obstacles),false);
+point=walkMove([0,.12,-5.2],[0,0,-3],doors,obstacles);assert.ok(point[2]>-5.57);
+doors[1].open=1;point=walkMove([0,.12,-5.2],[0,0,-2.2],doors,obstacles);assert.ok(point[2]<-7);
+point=walkMove(point,[2,0,0],doors,obstacles);assert.ok(point[0]<.26,'Lab bench blocks movement');
+console.log('PASS: connected habitat, door gating, hull and equipment collisions');
 async function setup(viewport,mobile=false){
   const page=await browser.newPage({viewport,deviceScaleFactor:1,isMobile:mobile,hasTouch:mobile});
   page.on('pageerror',e=>errors.push(e.message));
@@ -59,6 +77,33 @@ async function checkFree(page,mobile=false){
   assert.equal(await page.locator('#freeControls').isVisible(),false);
   assert.ok(distance(origin,await cameraEye(page))<.001,'Exiting free flight restores orbital position');
   assert.ok(distance(orbit,await matrix(page))<.001,'Exiting free flight restores orbital projection');
+}
+async function checkInterior(page){
+  await action(page,'interiorStart');
+  await page.waitForFunction(()=>document.querySelector('#interiorZone').textContent.includes('AIRLOCK'));
+  await page.waitForFunction(()=>window.__testEye&&Math.abs(window.__testEye[2]-6.32)<.02);
+  await fullCanvas(page);
+  await page.screenshot({path:'artifacts/interior-airlock.png'});
+  await page.locator('#gl').focus();await page.keyboard.down('w');
+  await page.waitForFunction(()=>window.__testEye[2]<5.92,{},{timeout:15000});
+  await page.waitForTimeout(800);await page.keyboard.up('w');
+  assert.ok((await cameraEye(page))[2]>5.82,'Closed door stops actual camera');
+  assert.match(await page.locator('#interiorPrompt').textContent(),/فتح/);
+  await page.locator('#interiorAction').click();await page.waitForTimeout(800);
+  await page.locator('#gl').focus();await page.keyboard.down('w');
+  await page.waitForFunction(()=>window.__testEye[2]<5.43,{},{timeout:15000});await page.keyboard.up('w');
+  await page.waitForFunction(()=>document.querySelector('#interiorZone').textContent.includes('HAB'));
+  await page.screenshot({path:'artifacts/interior-habitat.png'});
+  await action(page,'interiorStart');
+  await page.waitForFunction(()=>document.querySelector('#interiorPrompt').textContent.includes('الخروج'));
+  await page.locator('#interiorAction').click();
+  await page.waitForFunction(()=>document.querySelector('#interiorHud').classList.contains('hidden'),{},{timeout:10000});
+  await page.waitForFunction(()=>window.__testEye[2]>7.3);
+  assert.equal(await page.locator('#hatchEntry').isVisible(),true);
+  await page.locator('#hatchEntry').click();
+  await page.waitForFunction(()=>!document.querySelector('#interiorHud').classList.contains('hidden'));
+  await action(page,'freeCamera');
+  assert.equal(await page.locator('#interiorHud').isVisible(),false);
 }
 function checkPan(before,after,dx,dy,viewport){
   assert.ok(before.slice(0,12).every((v,i)=>Math.abs(v-after[i])<1e-5),'Pan preserves rotation and projection');
@@ -112,6 +157,7 @@ try{
   const centered=await matrix(page);assert.ok(beforePan.every((v,i)=>Math.abs(v-centered[i])<1e-4),'Recenter restores the original view');
   await page.locator('#panMode').click();assert.equal(await page.locator('#panMode').getAttribute('aria-pressed'),'false');
   await checkFree(page);
+  await checkInterior(page);
   await tab(page,'units');
   assert.equal(await page.locator('#modules button').count(),6);
   assert.equal(await page.locator('#progress').textContent(),'0 / 4');
@@ -165,6 +211,10 @@ try{
     await mobile.waitForTimeout(300);checkPan(beforePair,await matrix(mobile),30,-20,viewport);
     await action(mobile,'recenter');
     await checkFree(mobile,true);
+    await action(mobile,'interiorStart');await fullCanvas(mobile);
+    assert.equal(await mobile.locator('#interiorHud').isVisible(),true);
+    await mobile.screenshot({path:'artifacts/'+name+'-interior.png'});
+    await action(mobile,'freeCamera');
     await tab(mobile,'systems');await fullCanvas(mobile);
     assert.equal(await mobile.locator('[data-screen="systems"]').isVisible(),true);
     assert.equal(await mobile.locator('[data-screen="settings"]').first().isVisible(),false);
