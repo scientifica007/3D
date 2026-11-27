@@ -87,6 +87,18 @@ for(let i=51;i<=100;i++){result=advance(w,i*20,i<75?a:b);w=result.window;}
 assert.equal(result.sample.mixed_context,true);assert.deepEqual(result.sample.start_context,a);assert.deepEqual(result.sample.end_context,b);
 result=advance(null,10000,b);assert.equal(result.sample,null);
 result=advance(result.window,11000,b);assert.equal(result.sample.fps,1);assert.equal(result.sample.mixed_context,false);
+// Check the actual equipment action: rejecting a lab scan must not increment tasks or counters.
+const interactionState={inside:true,hatchTransit:null,freePos:[0,.12,-7.25],powerMode:'emergency',insideDone:{lab:false},labScan:0};
+const interactionEvents=[];
+const interact=productionFunction('interactInterior','updateCabin',
+ ['state','findInteraction','equipmentAvailable','logEvent','vecLog','showNotice'],
+ [interactionState,()=>({station:{id:'lab'}}),equipmentAvailable,(type,data)=>interactionEvents.push({type,data}),v=>v.slice(),()=>{}]);
+interact();
+assert.equal(interactionState.labScan,0);assert.equal(interactionState.insideDone.lab,false);
+assert.equal(interactionEvents[0].data.result,'rejected');assert.equal(interactionEvents[0].data.reason,'insufficient_power');
+interactionState.powerMode='normal';interact();
+assert.equal(interactionState.labScan,1);assert.equal(interactionState.insideDone.lab,true);
+assert.equal(interactionEvents[1].data.result,'accepted');
 console.log('PASS: contextual performance windows, door decision rules, docking guidance and emergency policy');
 async function setup(viewport,mobile=false){
   const page=await browser.newPage({viewport,deviceScaleFactor:1,isMobile:mobile,hasTouch:mobile});
