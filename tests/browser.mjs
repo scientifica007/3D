@@ -12,10 +12,24 @@ async function setup(viewport,mobile=false){
   const page=await browser.newPage({viewport,deviceScaleFactor:1,isMobile:mobile,hasTouch:mobile});
   page.on('pageerror',e=>errors.push(e.message));
   page.on('console',m=>{if(m.type()==='error')errors.push(m.text())});
+  await page.addInitScript(()=>{
+    const proto=WebGLRenderingContext.prototype, names=new WeakMap();
+    const get=proto.getUniformLocation,set=proto.uniformMatrix4fv;
+    proto.getUniformLocation=function(program,name){const result=get.call(this,program,name);if(result)names.set(result,name);return result;};
+    proto.uniformMatrix4fv=function(location,transpose,value){if(names.get(location)==='uVP')window.__testVP=Array.from(value);return set.call(this,location,transpose,value);};
+  });
   await page.goto(url);
   await page.waitForFunction(()=>document.querySelector('#renderStatus').textContent.includes('جاهز'),{},{timeout:30000});
   await page.waitForFunction(()=>document.querySelector('#earthStatus').textContent.includes('3/3'),{},{timeout:30000});
   return page;
+}
+async function matrix(page){await page.waitForFunction(()=>Array.isArray(window.__testVP));return page.evaluate(()=>window.__testVP.slice());}
+function checkPan(before,after,dx,dy,viewport){
+  assert.ok(before.slice(0,12).every((v,i)=>Math.abs(v-after[i])<1e-5),'Pan preserves rotation and projection');
+  const project=m=>[viewport.width*(.5+.5*m[12]/m[15]),viewport.height*(.5-.5*m[13]/m[15])];
+  const a=project(before),b=project(after);
+  assert.ok(Math.abs(b[0]-a[0]-dx)<3,'Horizontal screen displacement matches gesture');
+  assert.ok(Math.abs(b[1]-a[1]-dy)<3,'Vertical screen displacement matches gesture');
 }
 async function fullCanvas(page){
   const b=await page.evaluate(()=>{
@@ -52,6 +66,15 @@ try{
   });
   console.log('Framebuffer:',pixels);assert.equal(pixels.error,0);assert.ok(pixels.lit>pixels.total*.015);assert.ok(pixels.bright>100);
   await page.screenshot({path:'artifacts/desktop.png'});
+  const beforePan=await matrix(page);
+  await page.locator('#panMode').click();
+  assert.equal(await page.locator('#panMode').getAttribute('aria-pressed'),'true');
+  await page.mouse.move(500,350);await page.mouse.down();await page.mouse.move(590,410,{steps:6});await page.mouse.up();
+  await page.waitForTimeout(300);checkPan(beforePan,await matrix(page),90,60,{width:1366,height:850});
+  await page.screenshot({path:'artifacts/pan-desktop.png'});
+  await action(page,'recenter');await page.waitForTimeout(300);
+  const centered=await matrix(page);assert.ok(beforePan.every((v,i)=>Math.abs(v-centered[i])<1e-4),'Recenter restores the original view');
+  await page.locator('#panMode').click();assert.equal(await page.locator('#panMode').getAttribute('aria-pressed'),'false');
   await tab(page,'units');
   assert.equal(await page.locator('#modules button').count(),6);
   assert.equal(await page.locator('#progress').textContent(),'0 / 4');
@@ -86,6 +109,24 @@ try{
     const mobile=await setup(viewport,true);
     await fullCanvas(mobile);
     await mobile.screenshot({path:'artifacts/'+name+'.png'});
+    const before=await matrix(mobile);
+    await mobile.locator('#panMode').click();
+    const touch=await mobile.context().newCDPSession(mobile);
+    const sx=Math.round(viewport.width*.32),sy=Math.round(viewport.height*.40);
+    await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:sx,y:sy,id:1}]});
+    for(let i=1;i<=5;i++){await touch.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:sx+i*7,y:sy+i*5,id:1}]});await mobile.waitForTimeout(25);}
+    await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await mobile.waitForTimeout(300);checkPan(before,await matrix(mobile),35,25,viewport);
+    await mobile.screenshot({path:'artifacts/'+name+'-pan.png'});
+    await action(mobile,'recenter');await mobile.locator('#panMode').click();
+    await mobile.waitForTimeout(250);
+    const beforePair=await matrix(mobile);
+    const tx=Math.round(viewport.width*.30),ty=Math.round(viewport.height*.42);
+    await touch.send('Input.dispatchTouchEvent',{type:'touchStart',touchPoints:[{x:tx,y:ty,id:1},{x:tx+70,y:ty,id:2}]});
+    for(let i=1;i<=5;i++){await touch.send('Input.dispatchTouchEvent',{type:'touchMove',touchPoints:[{x:tx+i*6,y:ty-i*4,id:1},{x:tx+70+i*6,y:ty-i*4,id:2}]});await mobile.waitForTimeout(25);}
+    await touch.send('Input.dispatchTouchEvent',{type:'touchEnd',touchPoints:[]});
+    await mobile.waitForTimeout(300);checkPan(beforePair,await matrix(mobile),30,-20,viewport);
+    await action(mobile,'recenter');
     await tab(mobile,'systems');await fullCanvas(mobile);
     assert.equal(await mobile.locator('[data-screen="systems"]').isVisible(),true);
     assert.equal(await mobile.locator('[data-screen="settings"]').first().isVisible(),false);
