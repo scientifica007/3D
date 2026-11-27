@@ -1,0 +1,26 @@
+plugins {
+    id 'com.android.application'
+}
+android {
+    namespace 'io.github.scientifica007.helios'
+    compileSdk 35
+    defaultConfig {
+        applicationId 'io.github.scientifica007.helios'
+        minSdk 23
+        targetSdk 35
+        versionCode 200
+        versionName '2.0'
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+    sourceSets {
+        main.assets.srcDirs = [layout.buildDirectory.dir('generated/heliosAssets')]
+    }
+}
+def syncHelios = tasks.register('syncHelios', Copy) {
+    from(rootProject.file('../index.html'))
+    into(layout.buildDirectory.dir('generated/heliosAssets'))
+}
+tasks.named('preBuild').configure { dependsOn(syncHelios) }
