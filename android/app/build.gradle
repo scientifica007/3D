@@ -15,12 +15,4 @@ android {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
     }
-    sourceSets {
-        main.assets.srcDirs = [layout.buildDirectory.dir('generated/heliosAssets')]
-    }
 }
-def syncHelios = tasks.register('syncHelios', Copy) {
-    from(rootProject.file('../index.html'))
-    into(layout.buildDirectory.dir('generated/heliosAssets'))
-}
-tasks.named('preBuild').configure { dependsOn(syncHelios) }
