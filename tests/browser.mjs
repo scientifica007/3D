@@ -52,6 +52,13 @@ function productionFunction(name,next,args=[],values=[]){
   assert.ok(a>=0&&b>a,name+' extraction');
   return new Function(...args,source.slice(a,b)+'return '+name+';')(...values);
 }
+const shaderVariant=productionFunction('optimizedEarthSource','sceneProgram');
+const referenceShader=source.slice(source.indexOf('const fs=`')+10,source.indexOf('function shader(')).split('`;')[0];
+const optimizedShader=shaderVariant(referenceShader);
+assert.notEqual(optimizedShader,referenceShader);
+assert.ok(optimizedShader.includes('if(uHasDay>.5)')&&optimizedShader.includes('if(uHasCloud>.5)')&&optimizedShader.includes('if(uHasNight>.5)'));
+assert.ok(!optimizedShader.includes('mix(synthetic,')&&!optimizedShader.includes('mix(fallbackCloud,'));
+assert.throws(()=>shaderVariant('invalid'));
 const powerPolicy=productionFunction('powerPolicy','equipmentAvailable');
 const equipmentAvailable=productionFunction('equipmentAvailable','stats');
 assert.equal(powerPolicy('normal',0,-1),'emergency');
@@ -264,7 +271,7 @@ async function downloadSession(page){
   assert.match(download.suggestedFilename(),/^helios-.*\.json$/);
   const data=JSON.parse(await readFile(await download.path(),'utf8'));
   assert.equal(data.schema,'helios.session.v1');
-  assert.equal(data.app.version,'3.3.0');
+  assert.equal(data.app.version,'3.4.0');assert.equal(data.app.build,'13');
   assert.ok(data.performance_samples.every(p=>p.render_metric_frames===p.frames&&p.render_metrics&&p.render_metrics.draw_calls>0&&p.render_metrics.culled<=p.render_metrics.objects&&p.render_metrics.cpu_submit_ms>=0));
   assert.ok(Number.isFinite(data.session.summary.distance_units.inside));
   assert.ok(Number.isFinite(data.session.summary.distance_units.free));
@@ -276,6 +283,8 @@ async function downloadSession(page){
   assert.ok(data.performance_samples.every(p=>p.duration_ms>=1000&&Number.isFinite(p.fps)&&p.frames>0&&p.start_context.render_width>0&&p.end_context.render_height>0&&typeof p.mixed_context==='boolean'));
   assert.ok(data.events.every((e,i)=>i===0||e.seq>data.events[i-1].seq));
   assert.ok(data.samples.every(s=>s.camera.position.every(Number.isFinite)));
+  assert.ok(data.performance_samples.every(p=>['reference','optimized'].includes(p.start_context.earth_shader)&&p.start_context.earth_maps&&p.render_metrics.earth_mesh_draws>=0));
+  assert.ok(data.environment.earth_maps.day);
   return data;
 }
 async function checkSession(page){
@@ -336,6 +345,38 @@ async function capturePixels(page){
     let lit=0;for(let i=0;i<b.length;i+=4)if(b[i]+b[i+1]+b[i+2]>65)lit++;
     resolve({lit,total:c.width*c.height,error:g.getError(),width:c.width,height:c.height});
   })));
+}
+// Compare actual rendered pixels of both shader programs in the same paused scene.
+async function compareEarthShaders(page){
+  await action(page,'play');await close(page);
+  await tab(page,'settings');await page.locator('#quality').selectOption('cinema');
+  await page.locator('#camera').selectOption('planet');await close(page);
+  await page.waitForTimeout(2600);
+  assert.equal(await page.locator('#earthShader').isDisabled(),false);
+  async function capture(mode,save){
+    await tab(page,'settings');await page.locator('#earthShader').selectOption(mode);await close(page);
+    await nextFrame(page);await nextFrame(page);
+    return page.evaluate(save=>new Promise(resolve=>requestAnimationFrame(()=>{
+      const c=document.querySelector('#gl'),g=c.getContext('webgl'),b=new Uint8Array(c.width*c.height*4);
+      g.readPixels(0,0,c.width,c.height,g.RGBA,g.UNSIGNED_BYTE,b);
+      const error=g.getError();
+      if(save){window.__earthReference=b;resolve({error,width:c.width,height:c.height});return;}
+      const a=window.__earthReference;let sum=0,large=0,lit=0;for(let i=0;i<b.length;i+=4){let max=0;for(let k=0;k<3;k++){const d=Math.abs(b[i+k]-a[i+k]);sum+=d;max=Math.max(max,d);}if(max>8)large++;if(b[i]+b[i+1]+b[i+2]>65)lit++;}
+      resolve({error,mean:sum/(b.length*.75),fraction:large/(b.length/4),lit,total:b.length/4,sameSize:a.length===b.length});
+    })),save);
+  }
+  const first=await capture('reference',true);assert.equal(first.error,0);
+  await page.screenshot({path:'artifacts/earth-shader-reference.png'});
+  const second=await capture('optimized',false);assert.equal(second.error,0);assert.ok(second.sameSize&&second.lit>second.total*.015);
+  console.log('EARTH SHADER A/B',second);
+  assert.ok(second.mean<=1&&second.fraction<=.01,'Earth shader visual regression '+JSON.stringify(second));
+  await page.screenshot({path:'artifacts/earth-shader-optimized.png'});
+  await page.waitForTimeout(2200);
+  await tab(page,'session');const data=await downloadSession(page);
+  assert.ok(data.events.some(e=>e.type==='earth_shader_changed'&&e.data.value==='reference'));
+  assert.ok(data.performance_samples.some(p=>!p.mixed_context&&p.start_context.earth_shader==='optimized'&&p.start_context.earth_maps.day==='ready'&&p.render_metrics.earth_mesh_draws>0));
+  await tab(page,'settings');await page.locator('#quality').selectOption('auto');await page.locator('#camera').selectOption('orbit');await close(page);
+  await action(page,'play');await close(page);
 }
 async function compareRenderPaths(page,fallback=false){
   await action(page,'play');await close(page);
@@ -534,6 +575,7 @@ try{
     await tab(mobile,'mission');assert.equal(await mobile.locator('#restart').isVisible(),true);
     await close(mobile);await mobile.close();
   }
+  const shaderPage=await setup({width:540,height:420});await compareEarthShaders(shaderPage);await shaderPage.close();
   const fallback=await setup({width:760,height:440},false,true);
   await compareRenderPaths(fallback,true);await fallback.close();
   assert.deepEqual(errors,[]);
